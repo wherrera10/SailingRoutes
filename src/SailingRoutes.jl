@@ -33,11 +33,11 @@ export SailingPolar, SurfaceParameters, Position, GridPosition, GridPoint
 export TimeSlice, TimedPath, RoutingProblem
 
 # Earth Geometry Exports
-export getpolardata, deg2rad, rad2deg, normalizeangledegrees
+export getpolardata, deg2rad, rad2deg, angledifference, normalizeangledegrees
 export cartesian2polar, polar2cartesian, haversine, inverse_haversine
 
 # Sailing Performance Exports
-export boatspeed, bestvectorspeed, angledifference, vmg, sailsegmenttime
+export boatspeed, bestvectorspeed, vmg, sailsegmenttime
 export interpolatepolar, findbesttack
 
 # Weather Routing Exports
@@ -137,6 +137,42 @@ function Base.show(io::IO, sp::SurfaceParameters)
         io,
         "SurfaceParameters(wind=$(sp.winddeg)° @ $(sp.windkts) kts, current=$(sp.currentdeg)° @ $(sp.currentkts) kts)",
     )
+end
+
+const GridPosition = Tuple{Int, Int}
+@inline GridPosition(r::Integer, c::Integer) = (Int(r), Int(c))
+
+struct GridPoint
+    pt::Position
+    sp::SurfaceParameters
+end
+
+GridPoint(lat::Real, lon::Real, winddeg::Real, windkts::Real, currentdeg::Real, currentkts::Real) =
+    GridPoint(
+        Position(lat, lon),
+        SurfaceParameters(Float64(winddeg), Float64(windkts), Float64(currentdeg), Float64(currentkts)),
+    )
+
+Base.show(io::IO, gp::GridPoint) = print(io, "GridPoint($(gp.pt), $(gp.sp))")
+
+const TimeSlice = Matrix{GridPoint}
+
+struct TimedPath
+    duration::Float64
+    path::Vector{GridPosition}
+
+    function TimedPath(duration, path)
+        duration = Float64(duration)
+        duration < 0 && throw(ArgumentError("Duration cannot be negative"))
+        isempty(path) && throw(ArgumentError("Path cannot be empty"))
+        new(duration, path)
+    end
+end
+
+Base.isless(a::TimedPath, b::TimedPath) = a.duration < b.duration
+
+function Base.show(io::IO, tp::TimedPath)
+    print(io, "TimedPath($(tp.duration) minutes, $(length(tp.path)) points)")
 end
 
 """
@@ -249,7 +285,7 @@ end
     interpolatepolar(polar, windangle, windspeed)
 
 """
-    angle_difference(a, b)
+    angledifference(a, b)
 
 Smallest absolute difference between two compass angles in degrees,
 correctly handling wraparound at 0°/360° (e.g. the difference between
@@ -360,24 +396,6 @@ function sailsegmenttime(polar::SailingPolar, p::SurfaceParameters, lat1, lon1, 
     return distance / (vel * KNOT) / SECONDS_PER_MINUTE
 end
 
-const GridPosition = Tuple{Int, Int}
-@inline GridPosition(r::Integer, c::Integer) = (Int(r), Int(c))
-
-struct GridPoint
-    pt::Position
-    sp::SurfaceParameters
-end
-
-GridPoint(lat::Real, lon::Real, winddeg::Real, windkts::Real, currentdeg::Real, currentkts::Real) =
-    GridPoint(
-        Position(lat, lon),
-        SurfaceParameters(Float64(winddeg), Float64(windkts), Float64(currentdeg), Float64(currentkts)),
-    )
-
-Base.show(io::IO, gp::GridPoint) = print(io, "GridPoint($(gp.pt), $(gp.sp))")
-
-const TimeSlice = Matrix{GridPoint}
-
 mutable struct RoutingProblem
     timeinterval::Float64
     timeframe::Vector{TimeSlice}
@@ -419,22 +437,15 @@ mutable struct RoutingProblem
     end
 end
 
-struct TimedPath
-    duration::Float64
-    path::Vector{GridPosition}
+"""
+    gettimeslice(rp, duration)
 
-    function TimedPath(duration, path)
-        duration = Float64(duration)
-        duration < 0 && throw(ArgumentError("Duration cannot be negative"))
-        isempty(path) && throw(ArgumentError("Path cannot be empty"))
-        new(duration, path)
-    end
-end
-
-Base.isless(a::TimedPath, b::TimedPath) = a.duration < b.duration
-
-function Base.show(io::IO, tp::TimedPath)
-    print(io, "TimedPath($(tp.duration) minutes, $(length(tp.path)) points)")
+Get the appropriate time slice for a given elapsed duration.
+"""
+function gettimeslice(rp::RoutingProblem, duration::Float64)
+    idx = Int(floor(duration / rp.timeinterval)) + 1
+    idx = clamp(idx, 1, length(rp.timeframe))
+    return rp.timeframe[idx]
 end
 
 """
@@ -461,30 +472,8 @@ function closestpoint(p::Position, mat::Matrix{GridPoint})
     return mat[minidx...]
 end
 
-const NEIGHBOR_OFFSETS = (
-    GridPosition(-1, -1),
-    GridPosition(-1, 0),
-    GridPosition(-1, 1),
-    GridPosition(0, -1),
-    GridPosition(0, 1),
-    GridPosition(1, -1),
-    GridPosition(1, 0),
-    GridPosition(1, 1),
-)
-
 """
-    gettimeslice(rp, duration)
-
-Get the appropriate time slice for a given elapsed duration.
-"""
-function gettimeslice(rp::RoutingProblem, duration::Float64)
-    idx = Int(floor(duration / rp.timeinterval)) + 1
-    idx = clamp(idx, 1, length(rp.timeframe))
-    return rp.timeframe[idx]
-end
-
-"""
-    heuristiccostestimate(rp, sp, from, to)
+    heuristiccostestimate(rp, polar, from, to)
 
 Conservative lower-bound heuristic for A*. Uses the theoretical maximum boat speed
 without a favorable current, so the heuristic remains admissible regardless of current.
@@ -501,11 +490,23 @@ function heuristiccostestimate(
     return distance / (max(polar.maxboatspeed, 1e-9) * KNOT * SECONDS_PER_MINUTE)
 end
 
-"""
-    minimumtimeroute(rp, sp; verbose=false, maxiterations=10_000)
+const NEIGHBOR_OFFSETS = (
+    GridPosition(-1, -1),
+    GridPosition(-1, 0),
+    GridPosition(-1, 1),
+    GridPosition(0, -1),
+    GridPosition(0, 1),
+    GridPosition(1, -1),
+    GridPosition(1, 0),
+    GridPosition(1, 1),
+)
 
-Find the minimum time route for a sailing problem using A* search.
-Returns a `TimedPath` object containing the total travel time and the path as a vector of `GridPosition` objects.
+"""
+    minimumtimeroute(rp, polar; verbose=false, maxiterations=10_000)
+
+The optimization for which all the other types and functions in the module are defined.
+Finds the minimum time route for a sailing problem using A* search. Returns a `TimedPath`
+object containing the total travel time and the path as array of `GridPosition` objects.
 """
 function minimumtimeroute(
     rp::RoutingProblem,
@@ -527,7 +528,6 @@ function minimumtimeroute(
     arrivaltime[start...] = 0.0
 
     parent = fill(GridPosition(0, 0), nrows, ncols)
-    neighbors = Vector{GridPosition}(undef, 9)
     iterations = 0
     while !isempty(openset)
         iterations += 1
@@ -664,6 +664,18 @@ function createroutingproblem(
     return RoutingProblem(timeinterval, timeslices, obstacles, start, finish)
 end
 
+"""
+    solveroutingproblem(sp, rp; verbose = false)
+Alias for minimumtimeroute(). Uses A* search to find the minimum time route.
+Arguments:
+- `sp`: A `SailingPolar` object containing the boat's polar performance data.
+- `rp`: A `RoutingProblem` object defining the routing problem, including the grid,
+  wind and current conditions, obstacles, start and finish positions, and time interval.
+- `verbose`: Named optional boolean flag to enable verbose output during the search.
+Returns:
+    Tuple of a `TimedPath` object containing the total travel time as well as the
+    optimal path found as a vector of `GridPosition` objects ((x, y) tuples).
+"""
 solveroutingproblem(sp::SailingPolar, rp::RoutingProblem; verbose = false) =
     minimumtimeroute(rp, sp; verbose = verbose)
 
