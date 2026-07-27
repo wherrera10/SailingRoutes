@@ -162,6 +162,18 @@ const ep = 0.0005
     interp_speed = interpolatepolar(sp, test_angle, test_speed)
     @test abs(interp_speed - 0.07) < ep
 
+    # Test multiple interpolation points
+    test_angles = [0.0, 30.0, 45.0, 60.0, 90.0]
+    test_speeds = [5.0, 10.0, 15.0, 20.0]
+
+    for angle in test_angles
+        for speed in test_speeds
+            direct = boatspeed(sp, angle, speed)
+            interp = interpolatepolar(sp, angle, speed)
+            @test isapprox(direct, interp; atol=1e-9)
+        end
+    end
+
     # Test best tack: 100 degrees with these parameters
     bestangle, bestvmg = findbesttack(sp, 45.0, test_speed)
     @show bestangle, bestvmg
@@ -230,15 +242,119 @@ end
     @test gettimeslice(rp, 0.0) === rp.timeframe[1]
     @test gettimeslice(rp, 9.9) === rp.timeframe[1]
     @test gettimeslice(rp, 10.0) === rp.timeframe[2]
+    @test gettimeslice(rp, 10.1) === rp.timeframe[2]
+    @test gettimeslice(rp, 199.0) === rp.timeframe[20]
     @test gettimeslice(rp, 999999.0) === rp.timeframe[end]
+
+    # Test negative time and very large time (clamped)
+    @test gettimeslice(rp, -1.0) === rp.timeframe[1]
+    @test gettimeslice(rp, 1e6) === rp.timeframe[end]
+end
+
+@testset "mutatetimeslices!" begin
+    original = deepcopy(slices[1])
+    mutatetimeslices!(slices)
+    @test slices[1] != original
+    # Check that wind speeds increased
+    @test slices[2][1].sp.windkts > slices[1][1].sp.windkts
+    # Check that wind direction and current parameters unchanged
+    @test slices[2][1].sp.winddeg == slices[1][1].sp.winddeg
+    @test slices[2][1].sp.currentdeg == slices[1][1].sp.currentdeg
+    @test slices[2][1].sp.currentkts == slices[1][1].sp.currentkts
+end
+
+@testset "bestvectorspeed edge cases" begin
+    # Current exactly opposes desired heading
+    heading, sog = bestvectorspeed(
+        sp,
+        0.0,    # wind direction
+        90.0,   # target bearing
+        10.0,   # wind speed
+        270.0,  # current direction
+        5.0     # current speed
+    )
+    @test !isnan(heading)
+    @test sog >= 0.0
+
+    # Zero or near-zero wind speed with current
+    zero_wind_polar = SailingPolar([0.0, 0.00000001], [0.0, 0.00000001], [0.0 0.0; 0.0 0.0])
+    heading, sog = bestvectorspeed(
+        zero_wind_polar,
+        0.0, 90.0, 0.0000000005,
+        90.0, 5.0
+    )
+    @test isapprox(sog, 5.0; atol=1e-6)
+    @test isapprox(heading, 0.0; atol=1e-6)
+end
+
+@testset "Route consistency" begin
+    # Same route should give same result
+    tp1 = minimumtimeroute(routeprob, sp)
+    tp2 = minimumtimeroute(routeprob, sp)
+    @test tp1.duration == tp2.duration
+    @test tp1.path == tp2.path
+
+    # Symmetry test (reverse start and end)
+    reverse_route = RoutingProblem(
+        10.0, slices, forbidden, endpos, startpos
+    )
+    tp_reverse = minimumtimeroute(reverse_route, sp)
+    @test isfinite(tp_reverse.duration)
+end
+
+@testset "Polar data loading" begin
+    # Test with a valid CSV file (create temp file)
+    using CSV, DataFrames
+
+    temp_file = tempname() * ".csv"
+    try
+        df = DataFrame(
+            wind=repeat([5, 10, 15], 3),
+            angle=repeat([0, 30, 60], inner=3),
+            speed=[2, 3, 4, 5, 6, 7, 8, 9, 10]
+        )
+        CSV.write(temp_file, df)
+
+        polar = getpolardata(temp_file)
+        @test polar.winds == [5, 10, 15]
+        @test polar.degrees == [0, 30, 60]
+        @test size(polar.speeds) == (3, 3)
+    finally
+        rm(temp_file, force=true)
+    end
+
+    # Test missing file
+    @test_throws ErrorException getpolardata("nonexistent.csv")
 end
 
 @testset "route path sanity" begin
     if isfinite(tp.duration)
-        @test tp.path[1] == startpos
-        @test tp.path[end] == endpos
-        @test length(tp.path) >= 2
+        @test tp.path[1] == startpos "First point should be start position"
+        @test tp.path[end] == endpos "Last point should be end position"
+        @test length(tp.path) >= 2 "Path should have at least 2 points"
+
+        # Check all points are valid
+        for (i, pos) in enumerate(tp.path)
+            @test !forbidden[pos...] "Position $pos at index $i is forbidden"
+            @test 1 <= pos[1] <= 9 "Row out of bounds: $(pos[1])"
+            @test 1 <= pos[2] <= 9 "Column out of bounds: $(pos[2])"
+        end
+    else
+        @warn "No valid route found"
     end
+end
+
+@testset "Floating point precision" begin
+    # Test that small differences don't break things
+    tiny_polar = SailingPolar(
+        [1e-10, 1e-9],
+        [0.0, 0.1],
+        [1e-10 1e-9; 1e-9 1e-8]
+    )
+    @test boatspeed(tiny_polar, 0.05, 1e-9) >= 0.0
+
+    # Test near-zero angles
+    @test normalizeangledegrees(-1e-12) == 0.0
 end
 
 @testset "Edge Cases" begin
