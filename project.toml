@@ -1,0 +1,12 @@
+authors = ["William Herrera <wherrera@alahonua.com>"]
+name = "SailingRoutes"
+uuid = "d06415a4-9c7d-47c7-ab98-dfa4b4cb57de"
+version = "0.0.1"
+
+[deps]
+DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca3d"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+julia = "1"
