@@ -1,7 +1,5 @@
 using Test
-
-include("SailingRoutes.jl")
-using .SailingRoutes
+using SailingRoutes
 
 function testweatherrouting()
     # Create polar data
