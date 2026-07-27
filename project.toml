@@ -1,7 +1,7 @@
 authors = ["William Herrera <wherrera@alahonua.com>"]
 name = "SailingRoutes"
 uuid = "d06415a4-9c7d-47c7-ab98-dfa4b4cb57de"
-version = "0.0.1"
+version = "0.1.0"
 
 [deps]
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
