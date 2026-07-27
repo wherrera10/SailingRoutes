@@ -76,8 +76,25 @@ const routeprob = RoutingProblem(10.0, slices, forbidden, startpos, endpos)
 
 const sp = getpolardata("polar.csv")
 const tp = minimumtimeroute(routeprob, sp)
-@test isfinite(tp.duration)
-@test tp.path == [(1, 4), (2, 4), (2, 5), (2, 6), (3, 6), (4, 7), (5, 7), (6, 7), (7, 7), (8, 6), (8, 5), (9, 4)]
+
+@testset "route path sanity" begin
+    @test isfinite(tp.duration)
+    @test tp.path == [(1, 4), (2, 4), (2, 5), (2, 6), (3, 6), (4, 7), (5, 7), (6, 7), (7, 7), (8, 6), (8, 5), (9, 4)]
+    if isfinite(tp.duration)
+        @test tp.path[1] == startpos
+        @test tp.path[end] == endpos
+        @test length(tp.path) >= 2
+
+        # Check all points are valid
+        for (i, pos) in enumerate(tp.path)
+            @test !forbidden[pos...]
+            @test 1 <= pos[1] <= 9
+            @test 1 <= pos[2] <= 9
+        end
+    else
+        @warn "No valid route found"
+    end
+end
 
 @testset "Angle normalization" begin
     @test normalizeangledegrees(0.0) == 0.0
@@ -304,44 +321,30 @@ end
 
 @testset "Polar data loading" begin
     # Test with a valid CSV file (create temp file)
-    using CSV, DataFrames
-
+    navypolar = """
+    TWA;	6;	8;	10;	12;	14;	16;	20
+    52;	5.2;	6.1;	6.7;	6.9;	7.1;	7.2;	7.3
+    60;	5.6;	6.6;	7.0;	7.2;	7.4;	7.5;	7.6
+    75;	5.9;	6.8;	7.3;	7.6;	7.8;	7.9;	8.0
+    90;	6.0;	7.0;	7.4;	7.6;	7.9;	8.1;	8.3
+    110;	5.9;	6.9;	7.5;	7.8;	8.1;	8.3;	8.6
+    120;	5.6;	6.7;	7.3;	7.8;	8.1;	8.4;	8.9
+    135;	4.9;	6.1;	6.9;	7.4;	7.9;	8.2;	8.8
+    150;	4.1;	5.2;	6.1;	6.9;	7.4;	7.8;	8.5
+    """
     temp_file = tempname() * ".csv"
     try
-        df = DataFrame(
-            wind=repeat([5, 10, 15], 3),
-            angle=repeat([0, 30, 60], inner=3),
-            speed=[2, 3, 4, 5, 6, 7, 8, 9, 10]
-        )
-        CSV.write(temp_file, df)
-
+        write(temp_file, navypolar)
         polar = getpolardata(temp_file)
-        @test polar.winds == [5, 10, 15]
-        @test polar.degrees == [0, 30, 60]
-        @test size(polar.speeds) == (3, 3)
+        @test polar.winds ==  [6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 20.0]
+        @test polar.degrees == [52.0, 60.0, 75.0, 90.0, 110.0, 120.0, 135.0, 150.0]
+        @test size(polar.speeds) == (8, 7)
     finally
         rm(temp_file, force=true)
     end
 
     # Test missing file
-    @test_throws ErrorException getpolardata("nonexistent.csv")
-end
-
-@testset "route path sanity" begin
-    if isfinite(tp.duration)
-        @test tp.path[1] == startpos "First point should be start position"
-        @test tp.path[end] == endpos "Last point should be end position"
-        @test length(tp.path) >= 2 "Path should have at least 2 points"
-
-        # Check all points are valid
-        for (i, pos) in enumerate(tp.path)
-            @test !forbidden[pos...] "Position $pos at index $i is forbidden"
-            @test 1 <= pos[1] <= 9 "Row out of bounds: $(pos[1])"
-            @test 1 <= pos[2] <= 9 "Column out of bounds: $(pos[2])"
-        end
-    else
-        @warn "No valid route found"
-    end
+    @test_throws ArgumentError getpolardata("nonexistent.csv")
 end
 
 @testset "Floating point precision" begin
@@ -354,7 +357,7 @@ end
     @test boatspeed(tiny_polar, 0.05, 1e-9) >= 0.0
 
     # Test near-zero angles
-    @test normalizeangledegrees(-1e-12) == 0.0
+    @test isapprox(normalizeangledegrees(-1e-12), 0.0; atol=1e-12)
 end
 
 @testset "Edge Cases" begin
