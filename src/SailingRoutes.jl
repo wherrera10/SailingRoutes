@@ -193,12 +193,17 @@ function getpolardata(filename)
     end
 end
 
+const ANGLE_TOL = 1e-10
 """
     normalizeangledegrees(angle)
 
 Normalize an angle in degrees to the range [0, 360).
 """
-@inline normalizeangledegrees(angle::Float64) = mod(angle + 360.0, 360.0)
+@inline function normalizeangledegrees(angle::Float64)
+    a = mod(angle, 360.0)
+    # Snap values extremely close to 0° or 360° to 0°
+    a < ANGLE_TOL || 360.0 - a < ANGLE_TOL ? 0.0 : a
+end
 
 """
     cartesian2polar(x, y)
@@ -330,10 +335,16 @@ end
 """
     bestvectorspeed(polar, dirtravel, dirwind, windspeed, dircur, currentspeed)
 
-Determine the fastest achievable course over ground toward the desired direction.
-`dirwind` is the direction the wind blows *from*. `dircur` is the current's
-*set* — the direction the current flows *toward* — matching standard nautical
-convention (see [`SurfaceParameters`](@ref)).
+Determine the boat heading that maximizes progress toward `dirtravel`,
+taking current into account.
+
+Returns `(heading, sog)` where
+
+- `heading` is the recommended boat heading through the water.
+- `sog` is the resulting speed over ground.
+
+The optimization criterion is velocity made good (VMG) toward the desired
+track, while the returned speed is the actual speed over ground.
 """
 function bestvectorspeed(
     polar::SailingPolar,
@@ -343,45 +354,47 @@ function bestvectorspeed(
     dircur::Float64,
     currentspeed::Float64,
 )
-    isempty(polar.degrees) && return dirtravel, 0.0
+    isempty(polar.degrees) && return dirtravel, currentspeed
 
-    tr = deg2rad(dirtravel)
-    tx = sin(tr)
-    ty = cos(tr)
+    # Unit vector toward desired travel direction
+    tx, ty = polar2cartesian(1.0, dirtravel)
 
-    cr = deg2rad(dircur)
-    curx = currentspeed * sin(cr)
-    cury = currentspeed * cos(cr)
+    # Current vector
+    curx, cury = polar2cartesian(currentspeed, dircur)
 
-    bestvmg = -Inf
     bestheading = dirtravel
-    bestspeed = 0.0
+    bestsog = currentspeed
+    bestvmg = -Inf
 
     for relangle in polar.degrees
+
         boatspd = boatspeed(polar, relangle, windspeed)
-        boatspd <= 0 && continue
+        boatspd <= 1e-9 && continue
 
         for sign in (-1.0, 1.0)
-            heading = mod(dirwind - sign * relangle, 360.0)
-            hr = deg2rad(heading)
-            boatx = boatspd * sin(hr)
-            boaty = boatspd * cos(hr)
-
-            totalx = boatx + curx
-            totaly = boaty + cury
-            sog = hypot(totalx, totaly)
+            heading = normalizeangledegrees(dirwind - sign * relangle)
+            boatx, boaty = polar2cartesian(boatspd, heading)
+            gx = boatx + curx
+            gy = boaty + cury
+            sog = hypot(gx, gy)
             sog <= 0 && continue
+            # Projection of ground velocity onto desired track
+            vmg = gx * tx + gy * ty
 
-            currentvmg = totalx * tx + totaly * ty
-            if currentvmg > bestvmg
-                bestvmg = currentvmg
-                bestspeed = sog
-                bestheading = mod(rad2deg(atan(totalx, totaly)) + 360.0, 360.0)
+            if vmg > bestvmg
+                bestvmg = vmg
+                bestheading = heading
+                bestsog = sog
             end
         end
     end
 
-    return bestheading, bestspeed
+    # No propulsion: simply drift with the current.
+    if bestvmg == -Inf
+        return dirtravel, currentspeed
+    end
+
+    return bestheading, bestsog
 end
 
 """
