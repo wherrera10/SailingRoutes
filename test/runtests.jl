@@ -149,14 +149,16 @@ end
 
 const ep = 0.0005
 @testset "Speed and Angle Tests" begin
+    #haversine distance
     @test abs((haversine(Position(0, 0), Position(0, 1))[1] - 111200) / 111200) < ep
 
-    println("\n=== Testing Individual Functions ===")
+    # boat speed
     test_angle = 45.0
     test_speed = 15.0
     boat_speed = boatspeed(sp, test_angle, test_speed)
     @test abs(boat_speed - 0.07) < ep
 
+    # boat speed interpolated
     interp_speed = interpolatepolar(sp, test_angle, test_speed)
     @test abs(interp_speed - 0.07) < ep
 
